@@ -21,6 +21,8 @@ import (
 
 	"github.com/gardener/gardener/extensions/pkg/controller"
 	controllercmd "github.com/gardener/gardener/extensions/pkg/controller/cmd"
+	"github.com/gardener/gardener/extensions/pkg/controller/heartbeat"
+	heartbeatcmd "github.com/gardener/gardener/extensions/pkg/controller/heartbeat/cmd"
 	"github.com/gardener/gardener/extensions/pkg/util"
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
@@ -60,6 +62,14 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 			MaxConcurrentReconciles: 5,
 		}
 
+		heartbeatCtrlOpts = &heartbeatcmd.Options{
+			ExtensionName:        calico.Name,
+			RenewIntervalSeconds: 30,
+			Namespace:            os.Getenv("LEADER_ELECTION_NAMESPACE"),
+		}
+
+		controllerSwitches = calicocmd.ControllerSwitches()
+
 		configFileOpts = &calicocmd.ConfigOptions{}
 
 		aggOption = controllercmd.NewOptionAggregator(
@@ -68,6 +78,8 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 			mgrOpts,
 			calicoCtrlOpts,
 			controllercmd.PrefixOption("healthcheck-", healthCheckCtrlOpts),
+			controllercmd.PrefixOption("heartbeat-", heartbeatCtrlOpts),
+			controllerSwitches,
 			reconcileOpts,
 			configFileOpts,
 		)
@@ -79,6 +91,10 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := aggOption.Complete(); err != nil {
 				return fmt.Errorf("error completing options: %w", err)
+			}
+
+			if err := heartbeatCtrlOpts.Validate(); err != nil {
+				return err
 			}
 
 			if err := features.FeatureGate.SetFromMap(configFileOpts.Completed().Config.FeatureGates); err != nil {
@@ -110,6 +126,11 @@ func NewControllerManagerCommand(ctx context.Context) *cobra.Command {
 			calicoCtrlOpts.Completed().Apply(&calicocontroller.DefaultAddOptions.Controller)
 			configFileOpts.Completed().ApplyHealthCheckConfig(&healthcheck.AddOptions.HealthCheckConfig)
 			healthCheckCtrlOpts.Completed().Apply(&healthcheck.AddOptions.Controller)
+			heartbeatCtrlOpts.Completed().Apply(&heartbeat.DefaultAddOptions)
+
+			if err := controllerSwitches.Completed().AddToManager(mgr); err != nil {
+				return fmt.Errorf("could not add controllers to manager: %s", err)
+			}
 
 			if err := calicocontroller.AddToManager(mgr); err != nil {
 				return fmt.Errorf("could not add controllers to manager: %w", err)
